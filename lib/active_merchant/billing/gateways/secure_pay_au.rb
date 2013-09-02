@@ -226,6 +226,7 @@ module ActiveMerchant #:nodoc:
         end
         xml.tag! 'amount', amount(money)
         xml.tag! 'periodicType', PERIODIC_TYPES[action] if PERIODIC_TYPES[action]
+        xml.tag! 'currency', options[:currency] || currency(money)
 
         xml.target!
       end
