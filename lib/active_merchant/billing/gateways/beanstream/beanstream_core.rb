@@ -63,7 +63,7 @@ module ActiveMerchant #:nodoc:
         base.default_currency = 'CAD'
 
         # The countries the gateway supports merchants from as 2 digit ISO country codes
-        base.supported_countries = ['CA']
+        base.supported_countries = ['CA', 'US']
 
         # The card types supported by the payment gateway
         base.supported_cardtypes = [:visa, :master, :american_express, :discover, :diners_club, :jcb]
@@ -87,7 +87,7 @@ module ActiveMerchant #:nodoc:
       end
 
       def capture(money, authorization, options = {})
-        reference, amount, type = split_auth(authorization)
+        reference, _, _ = split_auth(authorization)
 
         post = {}
         add_amount(post, money)
@@ -98,7 +98,7 @@ module ActiveMerchant #:nodoc:
 
       def refund(money, source, options = {})
         post = {}
-        reference, amount, type = split_auth(source)
+        reference, _, type = split_auth(source)
         add_reference(post, reference)
         add_transaction_type(post, refund_action(type))
         add_amount(post, money)
@@ -106,7 +106,7 @@ module ActiveMerchant #:nodoc:
       end
 
       def credit(money, source, options = {})
-        deprecated Gateway::CREDIT_DEPRECATION_MESSAGE
+        ActiveMerchant.deprecated Gateway::CREDIT_DEPRECATION_MESSAGE
         refund(money, source, options)
       end
 
@@ -206,6 +206,11 @@ module ActiveMerchant #:nodoc:
           post[:trnExpMonth] = format(credit_card.month, :two_digits)
           post[:trnExpYear] = format(credit_card.year, :two_digits)
           post[:trnCardCvd] = credit_card.verification_value
+          if credit_card.is_a?(NetworkTokenizationCreditCard)
+            post[:"3DSecureXID"] = credit_card.transaction_id
+            post[:"3DSecureECI"] = credit_card.eci
+            post[:"3DSecureCAVV"] = credit_card.payment_cryptogram
+          end
         end
       end
 
@@ -349,10 +354,6 @@ module ActiveMerchant #:nodoc:
 
       def recurring_message_from(response)
         response[:message]
-      end
-
-      def success?(response)
-        response[:responseType] == 'R' || response[:trnApproved] == '1' || response[:responseCode] == '1'
       end
 
       def recurring_success?(response)

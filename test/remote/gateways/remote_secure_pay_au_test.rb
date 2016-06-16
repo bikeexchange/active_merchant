@@ -4,7 +4,6 @@ class RemoteSecurePayAuTest < Test::Unit::TestCase
 
   class MyCreditCard
     include ActiveMerchant::Billing::CreditCardMethods
-    include ActiveMerchant::Validateable
     attr_accessor :number, :month, :year, :first_name, :last_name, :verification_value, :brand
 
     def verification_value?
@@ -100,7 +99,7 @@ class RemoteSecurePayAuTest < Test::Unit::TestCase
   end
 
   def test_successful_void
-    assert response = @gateway.purchase(@amount, @credit_card, @options)
+    assert response = @gateway.authorize(@amount, @credit_card, @options)
     assert_success response
 
     authorization = response.authorization

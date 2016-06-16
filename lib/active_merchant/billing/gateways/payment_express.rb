@@ -16,7 +16,7 @@ module ActiveMerchant #:nodoc:
       # However, regular accounts with DPS only support VISA and Mastercard
       self.supported_cardtypes = [ :visa, :master, :american_express, :diners_club, :jcb ]
 
-      self.supported_countries = %w[ AU MY NZ SG ZA GB US ]
+      self.supported_countries = %w[ AU CA DE ES FR GB HK IE MY NL NZ SG US ZA ]
 
       self.homepage_url = 'http://www.paymentexpress.com/'
       self.display_name = 'PaymentExpress'
@@ -82,7 +82,7 @@ module ActiveMerchant #:nodoc:
       end
 
       def credit(money, identification, options = {})
-        deprecated CREDIT_DEPRECATION_MESSAGE
+        ActiveMerchant.deprecated CREDIT_DEPRECATION_MESSAGE
         refund(money, identification, options)
       end
 
@@ -120,6 +120,17 @@ module ActiveMerchant #:nodoc:
       def store(credit_card, options = {})
         request  = build_token_request(credit_card, options)
         commit(:validate, request)
+      end
+
+      def supports_scrubbing
+        true
+      end
+
+      def scrub(transcript)
+        transcript.
+          gsub(%r((Authorization: Basic )\w+), '\1[FILTERED]').
+          gsub(%r((<CardNumber>)\d+(</CardNumber>)), '\1[FILTERED]\2').
+          gsub(%r((<Cvc2>)\d+(</Cvc2>)), '\1[FILTERED]\2')
       end
 
       private
@@ -227,7 +238,7 @@ module ActiveMerchant #:nodoc:
       end
 
       # The options hash may contain optional data which will be passed
-      # through the the specialized optional fields at PaymentExpress
+      # through the specialized optional fields at PaymentExpress
       # as follows:
       #
       #     {
@@ -285,9 +296,9 @@ module ActiveMerchant #:nodoc:
         response = parse( ssl_post(self.live_url, request.to_s) )
 
         # Return a response
-        PaymentExpressResponse.new(response[:success] == APPROVED, response[:card_holder_help_text], response,
+        PaymentExpressResponse.new(response[:success] == APPROVED, message_from(response), response,
           :test => response[:test_mode] == '1',
-          :authorization => response[:dps_txn_ref]
+          :authorization => authorization_from(action, response)
         )
       end
 
@@ -310,6 +321,19 @@ module ActiveMerchant #:nodoc:
         end
 
         response
+      end
+
+      def message_from(response)
+        (response[:card_holder_help_text] || response[:response_text])
+      end
+
+      def authorization_from(action, response)
+        case action
+        when :validate
+          (response[:billing_id] || response[:dps_billing_id])
+        else
+          response[:dps_txn_ref]
+        end
       end
 
       def format_date(month, year)

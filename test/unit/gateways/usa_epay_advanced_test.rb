@@ -3,6 +3,7 @@ require 'test_helper'
 require 'logger'
 
 class UsaEpayAdvancedTest < Test::Unit::TestCase
+  include CommStub
 
   def setup
     # Optional Logger Setup
@@ -30,26 +31,26 @@ class UsaEpayAdvancedTest < Test::Unit::TestCase
     )
 
     @check = ActiveMerchant::Billing::Check.new(
-      :number => '123456789012',
+      :account_number => '123456789012',
       :routing_number => '123456789',
       :account_type => 'checking',
       :first_name => "Fred",
       :last_name => "Flintstone"
     )
-    
+
     payment_methods = [
-      { 
+      {
         :name => "My Visa", # optional
         :sort => 2, # optional
         :method => @credit_card
       },
-      { 
+      {
         :name => "My Checking",
         :method => @check
       }
     ]
 
-    payment_method = { 
+    payment_method = {
       :name => "My new Visa", # optional
       :method => @credit_card
     }
@@ -150,7 +151,19 @@ class UsaEpayAdvancedTest < Test::Unit::TestCase
 
   def test_successful_credit
     @gateway.expects(:ssl_post).returns(successful_credit_response)
-    assert response = @gateway.credit(1234, @credit_card, @options)
+    assert_deprecation_warning(Gateway::CREDIT_DEPRECATION_MESSAGE) do
+      assert response = @gateway.credit(1234, @credit_card, @options)
+      assert_instance_of Response, response
+      assert response.test?
+      assert_success response
+      assert_equal 'Approved', response.message['result']
+      assert_equal '47602599', response.authorization
+    end
+  end
+
+  def test_successful_refund
+    @gateway.expects(:ssl_post).returns(successful_credit_response)
+    assert response = @gateway.refund(1234, @credit_card, @options)
 
     assert_instance_of Response, response
     assert response.test?
@@ -368,9 +381,13 @@ class UsaEpayAdvancedTest < Test::Unit::TestCase
 
   def test_successful_run_check_sale
     @options.merge!(@transaction_options)
-    @gateway.expects(:ssl_post).returns(successful_transaction_response('runCheckSale'))
 
-    assert response = @gateway.run_check_sale(@options)
+    response = stub_comms do
+      @gateway.run_check_sale(@options.merge(:payment_method => @check))
+    end.check_request do |endpoint, data, headers|
+      assert_match(/123456789012/, data)
+    end.respond_with(successful_transaction_response('runCheckSale'))
+
     assert_instance_of Response, response
     assert response.test?
     assert_success response
@@ -538,7 +555,7 @@ class UsaEpayAdvancedTest < Test::Unit::TestCase
 
   def test_mismatch_response
     @gateway.expects(:ssl_post).returns(successful_get_check_trace_response)
-    
+
     assert response = @gateway.get_account_details
     assert_instance_of Response, response
     assert response.test?
@@ -548,7 +565,7 @@ class UsaEpayAdvancedTest < Test::Unit::TestCase
   private
 
   # Standard Gateway ==================================================
-  
+
   def successful_purchase_response
     <<-XML
 <?xml version="1.0" encoding="UTF-8"?>
@@ -625,7 +642,7 @@ class UsaEpayAdvancedTest < Test::Unit::TestCase
 
   def successful_get_customer_payment_method_response
     <<-XML
-<SOAP-ENV:Envelope xmlns:SOAP-ENV="http://schemas.xmlsoap.org/soap/envelope/" xmlns:ns1="urn:usaepay" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:SOAP-ENC="http://schemas.xmlsoap.org/soap/encoding/" SOAP-ENV:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"><SOAP-ENV:Body><ns1:getCustomerPaymentMethodResponse><getCustomerPaymentMethodReturn xsi:type="ns1:PaymentMethod"><MethodType xsi:type="xsd:string">cc</MethodType><MethodID xsi:type="xsd:integer">103</MethodID><MethodName xsi:type="xsd:string">My CC</MethodName><SecondarySort xsi:type="xsd:integer">5</SecondarySort><Created xsi:type="xsd:dateTime">2011-06-09T13:48:57+08:00</Created><Modified xsi:type="xsd:dateTime">2011-06-09T13:48:57+08:00</Modified><AvsStreet xsi:type="xsd:string">1234 My Street</AvsStreet><AvsZip xsi:type="xsd:string">K1C2N6</AvsZip><CardExpiration xsi:type="xsd:string">2012-12</CardExpiration><CardNumber xsi:type="xsd:string">XXXXXXXXXXXX2224</CardNumber><CardType xsi:type="xsd:string">V</CardType></getCustomerPaymentMethodReturn></ns1:getCustomerPaymentMethodResponse></SOAP-ENV:Body></SOAP-ENV:Envelope>
+<SOAP-ENV:Envelope xmlns:SOAP-ENV="http://schemas.xmlsoap.org/soap/envelope/" xmlns:ns1="urn:usaepay" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:SOAP-ENC="http://schemas.xmlsoap.org/soap/encoding/" SOAP-ENV:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"><SOAP-ENV:Body><ns1:getCustomerPaymentMethodResponse><getCustomerPaymentMethodReturn xsi:type="ns1:PaymentMethod"><MethodType xsi:type="xsd:string">cc</MethodType><MethodID xsi:type="xsd:integer">103</MethodID><MethodName xsi:type="xsd:string">My CC</MethodName><SecondarySort xsi:type="xsd:integer">5</SecondarySort><Created xsi:type="xsd:dateTime">2011-06-09T13:48:57+08:00</Created><Modified xsi:type="xsd:dateTime">2011-06-09T13:48:57+08:00</Modified><AvsStreet xsi:type="xsd:string">456 My Street</AvsStreet><AvsZip xsi:type="xsd:string">K1C2N6</AvsZip><CardExpiration xsi:type="xsd:string">2012-12</CardExpiration><CardNumber xsi:type="xsd:string">XXXXXXXXXXXX2224</CardNumber><CardType xsi:type="xsd:string">V</CardType></getCustomerPaymentMethodReturn></ns1:getCustomerPaymentMethodResponse></SOAP-ENV:Body></SOAP-ENV:Envelope>
     XML
   end
 
@@ -637,13 +654,13 @@ class UsaEpayAdvancedTest < Test::Unit::TestCase
 
   def successful_get_customer_payment_methods_response
     <<-XML
-<SOAP-ENV:Envelope xmlns:SOAP-ENV="http://schemas.xmlsoap.org/soap/envelope/" xmlns:ns1="urn:usaepay" xmlns:SOAP-ENC="http://schemas.xmlsoap.org/soap/encoding/" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" SOAP-ENV:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"><SOAP-ENV:Body><ns1:getCustomerPaymentMethodsResponse><getCustomerPaymentMethodsReturn SOAP-ENC:arrayType="ns1:PaymentMethod[2]" xsi:type="ns1:PaymentMethodArray"><item xsi:type="ns1:PaymentMethod"><MethodType xsi:type="xsd:string">cc</MethodType><MethodID xsi:type="xsd:integer">93</MethodID><MethodName xsi:type="xsd:string">My CC</MethodName><SecondarySort xsi:type="xsd:integer">5</SecondarySort><Created xsi:type="xsd:dateTime">2011-06-09T08:10:44+08:00</Created><Modified xsi:type="xsd:dateTime">2011-06-09T08:10:44+08:00</Modified><AvsStreet xsi:type="xsd:string">1234 My Street</AvsStreet><AvsZip xsi:type="xsd:string">K1C2N6</AvsZip><CardExpiration xsi:type="xsd:string">2012-12</CardExpiration><CardNumber xsi:type="xsd:string">XXXXXXXXXXXX2224</CardNumber><CardType xsi:type="xsd:string">V</CardType></item><item xsi:type="ns1:PaymentMethod"><MethodType xsi:type="xsd:string">cc</MethodType><MethodID xsi:type="xsd:integer">94</MethodID><MethodName xsi:type="xsd:string">Other CC</MethodName><SecondarySort xsi:type="xsd:integer">12</SecondarySort><Created xsi:type="xsd:dateTime">2011-06-09T08:10:44+08:00</Created><Modified xsi:type="xsd:dateTime">2011-06-09T08:10:44+08:00</Modified><AvsStreet xsi:type="xsd:string">1234 My Street</AvsStreet><AvsZip xsi:type="xsd:string">K1C2N6</AvsZip><CardExpiration xsi:type="xsd:string">2012-12</CardExpiration><CardNumber xsi:type="xsd:string">XXXXXXXXXXXX2224</CardNumber><CardType xsi:type="xsd:string">V</CardType></item></getCustomerPaymentMethodsReturn></ns1:getCustomerPaymentMethodsResponse></SOAP-ENV:Body></SOAP-ENV:Envelope>
+<SOAP-ENV:Envelope xmlns:SOAP-ENV="http://schemas.xmlsoap.org/soap/envelope/" xmlns:ns1="urn:usaepay" xmlns:SOAP-ENC="http://schemas.xmlsoap.org/soap/encoding/" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" SOAP-ENV:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"><SOAP-ENV:Body><ns1:getCustomerPaymentMethodsResponse><getCustomerPaymentMethodsReturn SOAP-ENC:arrayType="ns1:PaymentMethod[2]" xsi:type="ns1:PaymentMethodArray"><item xsi:type="ns1:PaymentMethod"><MethodType xsi:type="xsd:string">cc</MethodType><MethodID xsi:type="xsd:integer">93</MethodID><MethodName xsi:type="xsd:string">My CC</MethodName><SecondarySort xsi:type="xsd:integer">5</SecondarySort><Created xsi:type="xsd:dateTime">2011-06-09T08:10:44+08:00</Created><Modified xsi:type="xsd:dateTime">2011-06-09T08:10:44+08:00</Modified><AvsStreet xsi:type="xsd:string">456 My Street</AvsStreet><AvsZip xsi:type="xsd:string">K1C2N6</AvsZip><CardExpiration xsi:type="xsd:string">2012-12</CardExpiration><CardNumber xsi:type="xsd:string">XXXXXXXXXXXX2224</CardNumber><CardType xsi:type="xsd:string">V</CardType></item><item xsi:type="ns1:PaymentMethod"><MethodType xsi:type="xsd:string">cc</MethodType><MethodID xsi:type="xsd:integer">94</MethodID><MethodName xsi:type="xsd:string">Other CC</MethodName><SecondarySort xsi:type="xsd:integer">12</SecondarySort><Created xsi:type="xsd:dateTime">2011-06-09T08:10:44+08:00</Created><Modified xsi:type="xsd:dateTime">2011-06-09T08:10:44+08:00</Modified><AvsStreet xsi:type="xsd:string">456 My Street</AvsStreet><AvsZip xsi:type="xsd:string">K1C2N6</AvsZip><CardExpiration xsi:type="xsd:string">2012-12</CardExpiration><CardNumber xsi:type="xsd:string">XXXXXXXXXXXX2224</CardNumber><CardType xsi:type="xsd:string">V</CardType></item></getCustomerPaymentMethodsReturn></ns1:getCustomerPaymentMethodsResponse></SOAP-ENV:Body></SOAP-ENV:Envelope>
     XML
   end
 
   def successful_single_get_customer_payment_methods_response
     <<-XML
-<SOAP-ENV:Envelope xmlns:SOAP-ENV="http://schemas.xmlsoap.org/soap/envelope/" xmlns:ns1="urn:usaepay" xmlns:SOAP-ENC="http://schemas.xmlsoap.org/soap/encoding/" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" SOAP-ENV:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"><SOAP-ENV:Body><ns1:getCustomerPaymentMethodsResponse><getCustomerPaymentMethodsReturn SOAP-ENC:arrayType="ns1:PaymentMethod[1]" xsi:type="ns1:PaymentMethodArray"><item xsi:type="ns1:PaymentMethod"><MethodType xsi:type="xsd:string">cc</MethodType><MethodID xsi:type="xsd:integer">15</MethodID><MethodName xsi:type="xsd:string">My Visa</MethodName><SecondarySort xsi:type="xsd:integer">2</SecondarySort><Created xsi:type="xsd:dateTime">2011-06-05T19:44:09+08:00</Created><Modified xsi:type="xsd:dateTime">2011-06-05T19:44:09+08:00</Modified><AvsStreet xsi:type="xsd:string">1234 My Street</AvsStreet><AvsZip xsi:type="xsd:string">K1C2N6</AvsZip><CardExpiration xsi:type="xsd:string">2012-09</CardExpiration><CardNumber xsi:type="xsd:string">XXXXXXXXXXXX4242</CardNumber><CardType xsi:type="xsd:string">V</CardType></item></getCustomerPaymentMethodsReturn></ns1:getCustomerPaymentMethodsResponse></SOAP-ENV:Body></SOAP-ENV:Envelope>
+<SOAP-ENV:Envelope xmlns:SOAP-ENV="http://schemas.xmlsoap.org/soap/envelope/" xmlns:ns1="urn:usaepay" xmlns:SOAP-ENC="http://schemas.xmlsoap.org/soap/encoding/" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" SOAP-ENV:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"><SOAP-ENV:Body><ns1:getCustomerPaymentMethodsResponse><getCustomerPaymentMethodsReturn SOAP-ENC:arrayType="ns1:PaymentMethod[1]" xsi:type="ns1:PaymentMethodArray"><item xsi:type="ns1:PaymentMethod"><MethodType xsi:type="xsd:string">cc</MethodType><MethodID xsi:type="xsd:integer">15</MethodID><MethodName xsi:type="xsd:string">My Visa</MethodName><SecondarySort xsi:type="xsd:integer">2</SecondarySort><Created xsi:type="xsd:dateTime">2011-06-05T19:44:09+08:00</Created><Modified xsi:type="xsd:dateTime">2011-06-05T19:44:09+08:00</Modified><AvsStreet xsi:type="xsd:string">456 My Street</AvsStreet><AvsZip xsi:type="xsd:string">K1C2N6</AvsZip><CardExpiration xsi:type="xsd:string">2012-09</CardExpiration><CardNumber xsi:type="xsd:string">XXXXXXXXXXXX4242</CardNumber><CardType xsi:type="xsd:string">V</CardType></item></getCustomerPaymentMethodsReturn></ns1:getCustomerPaymentMethodsResponse></SOAP-ENV:Body></SOAP-ENV:Envelope>
     XML
   end
 
@@ -719,7 +736,7 @@ class UsaEpayAdvancedTest < Test::Unit::TestCase
     <<-XML
     XML
   end
-  
+
   def failed_override_transaction_response
     <<-XML
 <SOAP-ENV:Envelope xmlns:SOAP-ENV="http://schemas.xmlsoap.org/soap/envelope/"><SOAP-ENV:Body><SOAP-ENV:Fault><faultcode>SOAP-ENV:Server</faultcode><faultstring>105: Override not available for requested transaction.</faultstring></SOAP-ENV:Fault></SOAP-ENV:Body></SOAP-ENV:Envelope>
@@ -732,7 +749,7 @@ class UsaEpayAdvancedTest < Test::Unit::TestCase
 <SOAP-ENV:Envelope xmlns:SOAP-ENV="http://schemas.xmlsoap.org/soap/envelope/" xmlns:ns1="urn:usaepay" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:SOAP-ENC="http://schemas.xmlsoap.org/soap/encoding/" SOAP-ENV:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"><SOAP-ENV:Body><ns1:voidTransactionResponse><voidTransactionReturn xsi:type="xsd:boolean">true</voidTransactionReturn></ns1:voidTransactionResponse></SOAP-ENV:Body></SOAP-ENV:Envelope>
     XML
   end
-  
+
   def successful_refund_transaction_response
     <<-XML
 <?xml version="1.0" encoding="UTF-8"?>
@@ -741,7 +758,7 @@ class UsaEpayAdvancedTest < Test::Unit::TestCase
   end
 
   # Transaction Response ==============================================
-    
+
   def successful_get_transaction_status_response
     <<-XML
 <?xml version="1.0" encoding="UTF-8"?>
@@ -766,7 +783,7 @@ class UsaEpayAdvancedTest < Test::Unit::TestCase
   def successful_get_transaction_response
     <<-XML
 <?xml version="1.0" encoding="UTF-8"?>
-<SOAP-ENV:Envelope xmlns:SOAP-ENV="http://schemas.xmlsoap.org/soap/envelope/" xmlns:ns1="urn:usaepay" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:SOAP-ENC="http://schemas.xmlsoap.org/soap/encoding/" SOAP-ENV:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"><SOAP-ENV:Body><ns1:getTransactionResponse><getTransactionReturn xsi:type="ns1:TransactionObject"><AccountHolder xsi:type="xsd:string"></AccountHolder><BillingAddress xsi:type="ns1:Address"><City xsi:type="xsd:string">Ottawa</City><Company xsi:type="xsd:string">Widgets Inc</Company><Country xsi:type="xsd:string">CA</Country><Email xsi:type="xsd:string"></Email><Fax xsi:type="xsd:string"></Fax><FirstName xsi:type="xsd:string">Jim</FirstName><LastName xsi:type="xsd:string">Smith</LastName><Phone xsi:type="xsd:string">(555)555-5555</Phone><State xsi:type="xsd:string">ON</State><Street xsi:type="xsd:string">1234 My Street</Street><Street2 xsi:type="xsd:string">Apt 1</Street2><Zip xsi:type="xsd:string">K1C2N6</Zip></BillingAddress><CheckData xsi:type="ns1:CheckData"><Account xsi:nil="true"/><Routing xsi:nil="true"/></CheckData><CheckTrace xsi:type="ns1:CheckTrace"/><ClientIP xsi:type="xsd:string">127.0.0.1</ClientIP><CreditCardData xsi:type="ns1:CreditCardData"><AvsStreet xsi:type="xsd:string">1234 My Street</AvsStreet><AvsZip xsi:type="xsd:string">K1C2N6</AvsZip><CardCode xsi:type="xsd:string">XXX</CardCode><CardExpiration xsi:type="xsd:string">XXXX</CardExpiration><CardNumber xsi:type="xsd:string">XXXXXXXXXXXX2224</CardNumber><CardPresent xsi:type="xsd:boolean">false</CardPresent><CardType xsi:type="xsd:string">V</CardType><InternalCardAuth xsi:type="xsd:boolean">false</InternalCardAuth><MagStripe xsi:type="xsd:string"></MagStripe><MagSupport xsi:type="xsd:string"></MagSupport><Pares xsi:type="xsd:string"></Pares><TermType xsi:type="xsd:string"></TermType></CreditCardData><CustomerID xsi:type="xsd:string"></CustomerID><CustomFields SOAP-ENC:arrayType="ns1:FieldValue[0]" xsi:type="ns1:FieldValueArray"/><DateTime xsi:type="xsd:string">2011-06-11 19:23:37</DateTime><Details xsi:type="ns1:TransactionDetail"><Amount xsi:type="xsd:double">50</Amount><Clerk xsi:type="xsd:string"></Clerk><Currency xsi:type="xsd:string"></Currency><Description xsi:type="xsd:string"></Description><Comments xsi:type="xsd:string"></Comments><Discount xsi:type="xsd:double">0</Discount><Invoice xsi:type="xsd:string"></Invoice><NonTax xsi:type="xsd:boolean">false</NonTax><OrderID xsi:type="xsd:string"></OrderID><PONum xsi:type="xsd:string"></PONum><Shipping xsi:type="xsd:double">0</Shipping><Subtotal xsi:type="xsd:double">0</Subtotal><Table xsi:type="xsd:string"></Table><Tax xsi:type="xsd:double">0</Tax><Terminal xsi:type="xsd:string"></Terminal><Tip xsi:type="xsd:double">0</Tip></Details><LineItems SOAP-ENC:arrayType="ns1:LineItem[0]" xsi:type="ns1:LineItemArray"/><Response xsi:type="ns1:TransactionResponse"><AcsUrl xsi:nil="true"/><AuthAmount xsi:type="xsd:double">50</AuthAmount><AuthCode xsi:type="xsd:string">050129</AuthCode><AvsResult xsi:type="xsd:string">Address: Match &amp; 5 Digit Zip: Match</AvsResult><AvsResultCode xsi:type="xsd:string">YYY</AvsResultCode><BatchNum xsi:type="xsd:integer">1</BatchNum><BatchRefNum xsi:type="xsd:integer">14004</BatchRefNum><CardCodeResult xsi:type="xsd:string">Match</CardCodeResult><CardCodeResultCode xsi:type="xsd:string">M</CardCodeResultCode><CardLevelResult xsi:nil="true"/><CardLevelResultCode xsi:nil="true"/><ConversionRate xsi:type="xsd:double">0</ConversionRate><ConvertedAmount xsi:type="xsd:double">0</ConvertedAmount><ConvertedAmountCurrency xsi:type="xsd:string"></ConvertedAmountCurrency><CustNum xsi:type="xsd:integer">0</CustNum><Error xsi:type="xsd:string">Approved</Error><ErrorCode xsi:type="xsd:integer">0</ErrorCode><isDuplicate xsi:type="xsd:boolean">false</isDuplicate><Payload xsi:nil="true"/><RefNum xsi:type="xsd:integer">47568950</RefNum><Result xsi:type="xsd:string">Approved</Result><ResultCode xsi:type="xsd:string">A</ResultCode><Status xsi:type="xsd:string">Pending</Status><StatusCode xsi:type="xsd:string">P</StatusCode><VpasResultCode xsi:nil="true"/></Response><ServerIP xsi:type="xsd:string">67.168.21.42</ServerIP><ShippingAddress xsi:type="ns1:Address"><City xsi:type="xsd:string">Ottawa</City><Company xsi:type="xsd:string">Widgets Inc</Company><Country xsi:type="xsd:string">CA</Country><Email xsi:type="xsd:string"></Email><Fax xsi:type="xsd:string"></Fax><FirstName xsi:type="xsd:string">Jim</FirstName><LastName xsi:type="xsd:string">Smith</LastName><Phone xsi:type="xsd:string">(555)555-5555</Phone><State xsi:type="xsd:string">ON</State><Street xsi:type="xsd:string">1234 My Street</Street><Street2 xsi:type="xsd:string">Apt 1</Street2><Zip xsi:type="xsd:string">K1C2N6</Zip></ShippingAddress><Source xsi:type="xsd:string">test</Source><Status xsi:type="xsd:string">Authorized (Pending Settlement)</Status><TransactionType xsi:type="xsd:string">Sale</TransactionType><User xsi:type="xsd:string">auto</User></getTransactionReturn></ns1:getTransactionResponse></SOAP-ENV:Body></SOAP-ENV:Envelope>
+<SOAP-ENV:Envelope xmlns:SOAP-ENV="http://schemas.xmlsoap.org/soap/envelope/" xmlns:ns1="urn:usaepay" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:SOAP-ENC="http://schemas.xmlsoap.org/soap/encoding/" SOAP-ENV:encodingStyle="http://schemas.xmlsoap.org/soap/encoding/"><SOAP-ENV:Body><ns1:getTransactionResponse><getTransactionReturn xsi:type="ns1:TransactionObject"><AccountHolder xsi:type="xsd:string"></AccountHolder><BillingAddress xsi:type="ns1:Address"><City xsi:type="xsd:string">Ottawa</City><Company xsi:type="xsd:string">Widgets Inc</Company><Country xsi:type="xsd:string">CA</Country><Email xsi:type="xsd:string"></Email><Fax xsi:type="xsd:string"></Fax><FirstName xsi:type="xsd:string">Jim</FirstName><LastName xsi:type="xsd:string">Smith</LastName><Phone xsi:type="xsd:string">(555)555-5555</Phone><State xsi:type="xsd:string">ON</State><Street xsi:type="xsd:string">456 My Street</Street><Street2 xsi:type="xsd:string">Apt 1</Street2><Zip xsi:type="xsd:string">K1C2N6</Zip></BillingAddress><CheckData xsi:type="ns1:CheckData"><Account xsi:nil="true"/><Routing xsi:nil="true"/></CheckData><CheckTrace xsi:type="ns1:CheckTrace"/><ClientIP xsi:type="xsd:string">127.0.0.1</ClientIP><CreditCardData xsi:type="ns1:CreditCardData"><AvsStreet xsi:type="xsd:string">456 My Street</AvsStreet><AvsZip xsi:type="xsd:string">K1C2N6</AvsZip><CardCode xsi:type="xsd:string">XXX</CardCode><CardExpiration xsi:type="xsd:string">XXXX</CardExpiration><CardNumber xsi:type="xsd:string">XXXXXXXXXXXX2224</CardNumber><CardPresent xsi:type="xsd:boolean">false</CardPresent><CardType xsi:type="xsd:string">V</CardType><InternalCardAuth xsi:type="xsd:boolean">false</InternalCardAuth><MagStripe xsi:type="xsd:string"></MagStripe><MagSupport xsi:type="xsd:string"></MagSupport><Pares xsi:type="xsd:string"></Pares><TermType xsi:type="xsd:string"></TermType></CreditCardData><CustomerID xsi:type="xsd:string"></CustomerID><CustomFields SOAP-ENC:arrayType="ns1:FieldValue[0]" xsi:type="ns1:FieldValueArray"/><DateTime xsi:type="xsd:string">2011-06-11 19:23:37</DateTime><Details xsi:type="ns1:TransactionDetail"><Amount xsi:type="xsd:double">50</Amount><Clerk xsi:type="xsd:string"></Clerk><Currency xsi:type="xsd:string"></Currency><Description xsi:type="xsd:string"></Description><Comments xsi:type="xsd:string"></Comments><Discount xsi:type="xsd:double">0</Discount><Invoice xsi:type="xsd:string"></Invoice><NonTax xsi:type="xsd:boolean">false</NonTax><OrderID xsi:type="xsd:string"></OrderID><PONum xsi:type="xsd:string"></PONum><Shipping xsi:type="xsd:double">0</Shipping><Subtotal xsi:type="xsd:double">0</Subtotal><Table xsi:type="xsd:string"></Table><Tax xsi:type="xsd:double">0</Tax><Terminal xsi:type="xsd:string"></Terminal><Tip xsi:type="xsd:double">0</Tip></Details><LineItems SOAP-ENC:arrayType="ns1:LineItem[0]" xsi:type="ns1:LineItemArray"/><Response xsi:type="ns1:TransactionResponse"><AcsUrl xsi:nil="true"/><AuthAmount xsi:type="xsd:double">50</AuthAmount><AuthCode xsi:type="xsd:string">050129</AuthCode><AvsResult xsi:type="xsd:string">Address: Match &amp; 5 Digit Zip: Match</AvsResult><AvsResultCode xsi:type="xsd:string">YYY</AvsResultCode><BatchNum xsi:type="xsd:integer">1</BatchNum><BatchRefNum xsi:type="xsd:integer">14004</BatchRefNum><CardCodeResult xsi:type="xsd:string">Match</CardCodeResult><CardCodeResultCode xsi:type="xsd:string">M</CardCodeResultCode><CardLevelResult xsi:nil="true"/><CardLevelResultCode xsi:nil="true"/><ConversionRate xsi:type="xsd:double">0</ConversionRate><ConvertedAmount xsi:type="xsd:double">0</ConvertedAmount><ConvertedAmountCurrency xsi:type="xsd:string"></ConvertedAmountCurrency><CustNum xsi:type="xsd:integer">0</CustNum><Error xsi:type="xsd:string">Approved</Error><ErrorCode xsi:type="xsd:integer">0</ErrorCode><isDuplicate xsi:type="xsd:boolean">false</isDuplicate><Payload xsi:nil="true"/><RefNum xsi:type="xsd:integer">47568950</RefNum><Result xsi:type="xsd:string">Approved</Result><ResultCode xsi:type="xsd:string">A</ResultCode><Status xsi:type="xsd:string">Pending</Status><StatusCode xsi:type="xsd:string">P</StatusCode><VpasResultCode xsi:nil="true"/></Response><ServerIP xsi:type="xsd:string">67.168.21.42</ServerIP><ShippingAddress xsi:type="ns1:Address"><City xsi:type="xsd:string">Ottawa</City><Company xsi:type="xsd:string">Widgets Inc</Company><Country xsi:type="xsd:string">CA</Country><Email xsi:type="xsd:string"></Email><Fax xsi:type="xsd:string"></Fax><FirstName xsi:type="xsd:string">Jim</FirstName><LastName xsi:type="xsd:string">Smith</LastName><Phone xsi:type="xsd:string">(555)555-5555</Phone><State xsi:type="xsd:string">ON</State><Street xsi:type="xsd:string">456 My Street</Street><Street2 xsi:type="xsd:string">Apt 1</Street2><Zip xsi:type="xsd:string">K1C2N6</Zip></ShippingAddress><Source xsi:type="xsd:string">test</Source><Status xsi:type="xsd:string">Authorized (Pending Settlement)</Status><TransactionType xsi:type="xsd:string">Sale</TransactionType><User xsi:type="xsd:string">auto</User></getTransactionReturn></ns1:getTransactionResponse></SOAP-ENV:Body></SOAP-ENV:Envelope>
     XML
   end
 
@@ -778,7 +795,7 @@ class UsaEpayAdvancedTest < Test::Unit::TestCase
 <CheckPlatform xsi:type="xsd:string">TestBed</CheckPlatform><CreditCardPlatform xsi:type="xsd:string">Test Bed</CreditCardPlatform><DebitCardSupport xsi:type="xsd:boolean">false</DebitCardSupport><DirectPayPlatform xsi:type="xsd:string">Disabled</DirectPayPlatform><Industry xsi:type="xsd:string">eCommerce</Industry><SupportedCurrencies SOAP-ENC:arrayType="ns1:CurrencyObject[0]" xsi:type="ns1:CurrencyObjectArray"/></getAccountDetailsReturn></ns1:getAccountDetailsResponse></SOAP-ENV:Body></SOAP-ENV:Envelope>
     XML
   end
-  
+
   # Assertion Helpers =================================================
 
   def assert_avs_cvv_match(response)

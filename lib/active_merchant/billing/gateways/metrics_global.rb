@@ -150,7 +150,7 @@ module ActiveMerchant #:nodoc:
       end
 
       def credit(money, identification, options = {})
-        deprecated CREDIT_DEPRECATION_MESSAGE
+        ActiveMerchant.deprecated CREDIT_DEPRECATION_MESSAGE
         refund(money, identification, options)
       end
 
@@ -218,7 +218,7 @@ module ActiveMerchant #:nodoc:
         post[:delim_data]     = "TRUE"
         post[:delim_char]     = ","
         post[:encap_char]     = "$"
-        post[:solution_ID]    = application_id if application_id.present? && application_id != "ActiveMerchant"
+        post[:solution_ID]    = application_id if application_id
 
         request = post.merge(parameters).collect { |key, value| "x_#{key}=#{CGI.escape(value.to_s)}" }.join("&")
         request
@@ -284,17 +284,6 @@ module ActiveMerchant #:nodoc:
         end
       end
 
-      # Make a ruby type out of the response string
-      def normalize(field)
-        case field
-        when "true"   then true
-        when "false"  then false
-        when ""       then nil
-        when "null"   then nil
-        else field
-        end
-      end
-
       def message_from(results)
         if results[:response_code] == DECLINED
           return CVVResult.messages[ results[:card_code] ] if CARD_CODE_ERRORS.include?(results[:card_code])
@@ -306,17 +295,9 @@ module ActiveMerchant #:nodoc:
         (results[:response_reason_text] ? results[:response_reason_text].chomp('.') : '')
       end
 
-      def expdate(creditcard)
-        year  = sprintf("%.4i", creditcard.year)
-        month = sprintf("%.2i", creditcard.month)
-
-        "#{month}#{year[-2..-1]}"
-      end
-
       def split(response)
         response[1..-2].split(/\$,\$/)
       end
-
     end
   end
 end

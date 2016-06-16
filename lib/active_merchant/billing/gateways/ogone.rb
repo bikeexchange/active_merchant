@@ -32,13 +32,13 @@ module ActiveMerchant #:nodoc:
     # == Usage
     #
     #   gateway = ActiveMerchant::Billing::OgoneGateway.new(
-    #               :login                     => "my_ogone_psp_id",
-    #               :user                      => "my_ogone_user_id",
-    #               :password                  => "my_ogone_pswd",
-    #               :signature                 => "my_ogone_sha_signature", # Only if you configured your Ogone environment so.
-    #               :signature_encryptor       => "sha512", # Can be "none" (default), "sha1", "sha256" or "sha512".
+    #     :login               => "my_ogone_psp_id",
+    #     :user                => "my_ogone_user_id",
+    #     :password            => "my_ogone_pswd",
+    #     :signature           => "my_ogone_sha_signature", # Only if you configured your Ogone environment so.
+    #     :signature_encryptor => "sha512"                  # Can be "none" (default), "sha1", "sha256" or "sha512".
     #                                                       # Must be the same as the one configured in your Ogone account.
-    #            )
+    #   )
     #
     #   # set up credit card object as in main ActiveMerchant example
     #   creditcard = ActiveMerchant::Billing::CreditCard.new(
@@ -75,7 +75,19 @@ module ActiveMerchant #:nodoc:
     #
     #   # When using store, you can also let Ogone generate the alias for you
     #   response = gateway.store(creditcard)
-    #   puts response.billing_id  # Retrieve the generated alias
+    #   puts response.billing_id # Retrieve the generated alias
+    #
+    #   # By default, Ogone tries to authorize 0.01 EUR but you can change this
+    #   # amount using the :store_amount option when creating the gateway object:
+    #   gateway = ActiveMerchant::Billing::OgoneGateway.new(
+    #     :login               => "my_ogone_psp_id",
+    #     :user                => "my_ogone_user_id",
+    #     :password            => "my_ogone_pswd",
+    #     :signature           => "my_ogone_sha_signature",
+    #     :signature_encryptor => "sha512",
+    #     :store_amount        => 100 # The store method will try to authorize 1 EUR instead of 0.01 EUR
+    #   )
+    #   response = gateway.store(creditcard) # authorize 1 EUR and void the authorization right away
     #
     # == 3-D Secure feature
     #
@@ -99,12 +111,6 @@ module ActiveMerchant #:nodoc:
     #     :language        => Customer's language, for example: "en_EN"
     #
     class OgoneGateway < Gateway
-
-      URLS = {
-        :order       => 'https://secure.ogone.com/ncol/%s/orderdirect.asp',
-        :maintenance => 'https://secure.ogone.com/ncol/%s/maintenancedirect.asp'
-      }
-
       CVV_MAPPING = { 'OK' => 'M',
                       'KO' => 'N',
                       'NO' => 'P' }
@@ -125,8 +131,8 @@ module ActiveMerchant #:nodoc:
       OGONE_NO_SIGNATURE_DEPRECATION_MESSAGE   = "Signature usage will be the default for a future release of ActiveMerchant. You should either begin using it, or update your configuration to explicitly disable it (signature_encryptor: none)"
       OGONE_STORE_OPTION_DEPRECATION_MESSAGE   = "The 'store' option has been renamed to 'billing_id', and its usage is deprecated."
 
-      self.test_url = URLS[:order] % "test"
-      self.live_url = URLS[:order] % "prod"
+      self.test_url = "https://secure.ogone.com/ncol/test/"
+      self.live_url = "https://secure.ogone.com/ncol/prod/"
 
       self.supported_countries = ['BE', 'DE', 'FR', 'NL', 'AT', 'CH']
       # also supports Airplus and UATP
@@ -135,6 +141,7 @@ module ActiveMerchant #:nodoc:
       self.display_name = 'Ogone'
       self.default_currency = 'EUR'
       self.money_format = :cents
+      self.ssl_version = :TLSv1
 
       def initialize(options = {})
         requires!(options, :login, :user, :password)
@@ -144,12 +151,13 @@ module ActiveMerchant #:nodoc:
       # Verify and reserve the specified amount on the account, without actually doing the transaction.
       def authorize(money, payment_source, options = {})
         post = {}
+        action = (payment_source.brand == "mastercard") ? "PAU" : "RES"
         add_invoice(post, options)
         add_payment_source(post, payment_source, options)
         add_address(post, payment_source, options)
         add_customer_data(post, options)
         add_money(post, money, options)
-        commit('RES', post)
+        commit(action, post)
       end
 
       # Verify and transfer the specified amount.
@@ -185,7 +193,7 @@ module ActiveMerchant #:nodoc:
       # Credit the specified account by a specific amount.
       def credit(money, identification_or_credit_card, options = {})
         if reference_transaction?(identification_or_credit_card)
-          deprecated CREDIT_DEPRECATION_MESSAGE
+          ActiveMerchant.deprecated CREDIT_DEPRECATION_MESSAGE
           # Referenced credit: refund of a settled transaction
           refund(money, identification_or_credit_card, options)
         else # must be a credit card or card reference
@@ -198,12 +206,31 @@ module ActiveMerchant #:nodoc:
         perform_reference_credit(money, reference, options)
       end
 
+      def verify(credit_card, options={})
+        MultiResponse.run(:use_first_response) do |r|
+          r.process { authorize(100, credit_card, options) }
+          r.process(:ignore_result) { void(r.authorization, options) }
+        end
+      end
+
       # Store a credit card by creating an Ogone Alias
       def store(payment_source, options = {})
         options.merge!(:alias_operation => 'BYPSP') unless(options.has_key?(:billing_id) || options.has_key?(:store))
-        response = authorize(1, payment_source, options)
+        response = authorize(@options[:store_amount] || 1, payment_source, options)
         void(response.authorization) if response.success?
         response
+      end
+
+      def supports_scrubbing?
+        true
+      end
+
+      def scrub(transcript)
+        transcript.
+        gsub(%r((Authorization: Basic )\w+), '\1[FILTERED]').
+        gsub(%r((&?cardno=)[^&]*)i, '\1[FILTERED]').
+        gsub(%r((&?cvc=)[^&]*)i, '\1[FILTERED]').
+        gsub(%r((&?pswd=)[^&]*)i, '\1[FILTERED]')
       end
 
       private
@@ -237,17 +264,18 @@ module ActiveMerchant #:nodoc:
       end
 
       def add_payment_source(post, payment_source, options)
+        add_d3d(post, options) if options[:d3d]
+
         if payment_source.is_a?(String)
           add_alias(post, payment_source, options[:alias_operation])
           add_eci(post, options[:eci] || '9')
         else
           if options.has_key?(:store)
-            deprecated OGONE_STORE_OPTION_DEPRECATION_MESSAGE
+            ActiveMerchant.deprecated OGONE_STORE_OPTION_DEPRECATION_MESSAGE
             options[:billing_id] ||= options[:store]
           end
           add_alias(post, options[:billing_id], options[:alias_operation])
           add_eci(post, options[:eci] || '7')
-          add_d3d(post, options) if options[:d3d]
           add_creditcard(post, payment_source)
         end
       end
@@ -264,6 +292,8 @@ module ActiveMerchant #:nodoc:
         add_pair post, 'ACCEPTURL',       options[:accept_url]      if options[:accept_url]
         add_pair post, 'DECLINEURL',      options[:decline_url]     if options[:decline_url]
         add_pair post, 'EXCEPTIONURL',    options[:exception_url]   if options[:exception_url]
+        add_pair post, 'CANCELURL',       options[:cancel_url]      if options[:cancel_url]
+        add_pair post, 'PARAMVAR',        options[:paramvar]       if options[:paramvar]
         add_pair post, 'PARAMPLUS',       options[:paramplus]       if options[:paramplus]
         add_pair post, 'COMPLUS',         options[:complus]         if options[:complus]
         add_pair post, 'LANGUAGE',        options[:language]        if options[:language]
@@ -327,12 +357,12 @@ module ActiveMerchant #:nodoc:
       end
 
       def commit(action, parameters)
+        add_pair parameters, 'RTIMEOUT', @options[:timeout] if @options[:timeout]
         add_pair parameters, 'PSPID',  @options[:login]
         add_pair parameters, 'USERID', @options[:user]
         add_pair parameters, 'PSWD',   @options[:password]
 
-        url = URLS[parameters['PAYID'] ? :maintenance : :order] % [test? ? "test" : "prod"]
-        response = parse(ssl_post(url, post_data(action, parameters)))
+        response = parse(ssl_post(url(parameters['PAYID']), post_data(action, parameters)))
 
         options = {
           :authorization => [response["PAYID"], action].join(";"),
@@ -341,6 +371,10 @@ module ActiveMerchant #:nodoc:
           :cvv_result    => CVV_MAPPING[response["CVCCheck"]]
         }
         OgoneResponse.new(successful?(response), message_from(response), response, options)
+      end
+
+      def url(payid)
+        (test? ? test_url : live_url) + (payid ? "maintenancedirect.asp" : "orderdirect.asp")
       end
 
       def successful?(response)
@@ -375,27 +409,48 @@ module ActiveMerchant #:nodoc:
 
       def add_signature(parameters)
         if @options[:signature].blank?
-           deprecated(OGONE_NO_SIGNATURE_DEPRECATION_MESSAGE) unless(@options[:signature_encryptor] == "none")
+           ActiveMerchant.deprecated(OGONE_NO_SIGNATURE_DEPRECATION_MESSAGE) unless(@options[:signature_encryptor] == "none")
            return
         end
 
-        sha_encryptor = case @options[:signature_encryptor]
-                        when 'sha256'
-                          Digest::SHA256
-                        when 'sha512'
-                          Digest::SHA512
-                        else
-                          Digest::SHA1
-                        end
+        add_pair parameters, 'SHASign', calculate_signature(parameters, @options[:signature_encryptor], @options[:signature])
+      end
 
-        string_to_digest = if @options[:signature_encryptor]
-          parameters.sort { |a, b| a[0].upcase <=> b[0].upcase }.map { |k, v| "#{k.upcase}=#{v}" }.join(@options[:signature])
+      def calculate_signature(signed_parameters, algorithm, secret)
+        return legacy_calculate_signature(signed_parameters, secret) unless algorithm
+
+        sha_encryptor = case algorithm
+        when 'sha256'
+          Digest::SHA256
+        when 'sha512'
+          Digest::SHA512
+        when 'sha1'
+          Digest::SHA1
         else
-          %w[orderID amount currency CARDNO PSPID Operation ALIAS].map { |key| parameters[key] }.join
+          raise "Unknown signature algorithm #{algorithm}"
         end
-        string_to_digest << @options[:signature]
 
-        add_pair parameters, 'SHASign', sha_encryptor.hexdigest(string_to_digest).upcase
+        filtered_params = signed_parameters.select{|k,v| !v.blank?}
+        sha_encryptor.hexdigest(
+          filtered_params.sort_by{|k,v| k.upcase}.map{|k, v| "#{k.upcase}=#{v}#{secret}"}.join("")
+        ).upcase
+      end
+
+      def legacy_calculate_signature(parameters, secret)
+        Digest::SHA1.hexdigest(
+          (
+            %w(
+              orderID
+              amount
+              currency
+              CARDNO
+              PSPID
+              Operation
+              ALIAS
+            ).map{|key| parameters[key]} +
+            [secret]
+          ).join("")
+        ).upcase
       end
 
       def add_pair(post, key, value)

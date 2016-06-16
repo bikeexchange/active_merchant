@@ -2,12 +2,14 @@ module ActiveMerchant #:nodoc:
   module Billing #:nodoc:
     # This module is included in both PaypalGateway and PaypalExpressGateway
     module PaypalCommonAPI
-      API_VERSION = '72'
+      include Empty
+
+      API_VERSION = '124'
 
       URLS = {
         :test => { :certificate => 'https://api.sandbox.paypal.com/2.0/',
                    :signature   => 'https://api-3t.sandbox.paypal.com/2.0/' },
-        :live => { :certificate => 'https://api-aa.paypal.com/2.0/',
+        :live => { :certificate => 'https://api.paypal.com/2.0/',
                    :signature   => 'https://api-3t.paypal.com/2.0/' }
       }
 
@@ -37,6 +39,20 @@ module ActiveMerchant #:nodoc:
       SUCCESS_CODES = [ 'Success', 'SuccessWithWarning' ]
 
       FRAUD_REVIEW_CODE = "11610"
+
+      STANDARD_ERROR_CODE_MAPPING = {
+        '15005' => :card_declined,
+        '10754' => :card_declined,
+        '10752' => :card_declined,
+        '10759' => :card_declined,
+        '10761' => :card_declined,
+        '15002' => :card_declined,
+        '11084' => :card_declined,
+        '15004' => :incorrect_cvc,
+        '10762' => :invalid_cvc,
+      }
+
+      STANDARD_ERROR_CODE_MAPPING.default = :processing_error
 
       def self.included(base)
         base.default_currency = 'USD'
@@ -122,7 +138,7 @@ module ActiveMerchant #:nodoc:
       end
 
       def credit(money, identification, options = {})
-        deprecated Gateway::CREDIT_DEPRECATION_MESSAGE
+        ActiveMerchant.deprecated Gateway::CREDIT_DEPRECATION_MESSAGE
         refund(money, identification, options)
       end
 
@@ -242,7 +258,7 @@ module ActiveMerchant #:nodoc:
         commit 'DoAuthorization', build_do_authorize(transaction_id, money, options)
       end
 
-      # The ManagePendingTransactionStatus API operation accepts or denys a
+      # The ManagePendingTransactionStatus API operation accepts or denies a
       # pending transaction held by Fraud Management Filters.
       #
       # ==== Parameters:
@@ -342,6 +358,7 @@ module ActiveMerchant #:nodoc:
       def build_mass_pay_request(*args)
         default_options = args.last.is_a?(Hash) ? args.pop : {}
         recipients = args.first.is_a?(Array) ? args : [args]
+        receiver_type = default_options[:receiver_type]
 
         xml = Builder::XmlMarkup.new
 
@@ -349,11 +366,18 @@ module ActiveMerchant #:nodoc:
           xml.tag! 'MassPayRequest', 'xmlns:n2' => EBAY_NAMESPACE do
             xml.tag! 'n2:Version', API_VERSION
             xml.tag! 'EmailSubject', default_options[:subject] if default_options[:subject]
+            xml.tag! 'ReceiverType', receiver_type if receiver_type
             recipients.each do |money, recipient, options|
               options ||= default_options
               xml.tag! 'MassPayItem' do
-                xml.tag! 'ReceiverEmail', recipient
-                xml.tag! 'Amount', amount(money), 'currencyID' => options[:currency] || currency(money)
+                if(!receiver_type || receiver_type == 'EmailAddress')
+                  xml.tag! 'ReceiverEmail', recipient
+                elsif receiver_type == 'UserID'
+                  xml.tag! 'ReceiverID', recipient
+                else
+                  raise ArgumentError.new("Unknown receiver_type: #{receiver_type}")
+                end
+                xml.tag! 'Amount', amount(money), 'currencyID' => (options[:currency] || currency(money))
                 xml.tag! 'Note', options[:note] if options[:note]
                 xml.tag! 'UniqueId', options[:unique_id] if options[:unique_id]
               end
@@ -534,7 +558,7 @@ module ActiveMerchant #:nodoc:
             xml.tag! 'n2:Number', item[:number]
             xml.tag! 'n2:Quantity', item[:quantity]
             if item[:amount]
-              xml.tag! 'n2:Amount', localized_amount(item[:amount], currency_code), 'currencyID' => currency_code
+              xml.tag! 'n2:Amount', item_amount(item[:amount], currency_code), 'currencyID' => currency_code
             end
             xml.tag! 'n2:Description', item[:description]
             xml.tag! 'n2:ItemURL', item[:url]
@@ -565,7 +589,7 @@ module ActiveMerchant #:nodoc:
           xml.tag! 'n2:Custom', options[:custom] unless options[:custom].blank?
 
           xml.tag! 'n2:InvoiceID', (options[:order_id] || options[:invoice_id]) unless (options[:order_id] || options[:invoice_id]).blank?
-          xml.tag! 'n2:ButtonSource', application_id.to_s.slice(0,32) unless application_id.blank?
+          add_button_source(xml)
 
           # The notify URL applies only to DoExpressCheckoutPayment.
           # This value is ignored when set in SetExpressCheckout or GetExpressCheckoutDetails
@@ -585,11 +609,18 @@ module ActiveMerchant #:nodoc:
         end
       end
 
+      def add_button_source(xml)
+        button_source = (@options[:button_source] || application_id)
+        if !empty?(button_source)
+          xml.tag! 'n2:ButtonSource', button_source.to_s.slice(0, 32)
+        end
+      end
+
       def add_express_only_payment_details(xml, options = {})
         add_optional_fields(xml,
-                            %w{n2:NoteText          n2:SoftDescriptor
-                               n2:TransactionId     n2:AllowedPaymentMethodType
-                               n2:PaymentRequestID  n2:PaymentAction},
+                            %w{n2:NoteText          n2:PaymentAction
+                               n2:TransactionId     n2:AllowedPaymentMethod
+                               n2:PaymentRequestID  },
                             options)
       end
 
@@ -617,12 +648,22 @@ module ActiveMerchant #:nodoc:
         response = parse(action, ssl_post(endpoint_url, build_request(request), @options[:headers]))
 
         build_response(successful?(response), message_from(response), response,
-    	    :test => test?,
-    	    :authorization => authorization_from(response),
-    	    :fraud_review => fraud_review?(response),
-    	    :avs_result => { :code => response[:avs_code] },
-    	    :cvv_result => response[:cvv2_code]
+          :test => test?,
+          :authorization => authorization_from(response),
+          :fraud_review => fraud_review?(response),
+          :error_code => standardized_error_code(response),
+          :avs_result => { :code => response[:avs_code] },
+          :cvv_result => response[:cvv2_code]
         )
+      end
+
+      def standardized_error_code(response)
+        STANDARD_ERROR_CODE_MAPPING[error_codes(response).first]
+      end
+
+      def error_codes(response)
+        return [] unless response.has_key?(:error_codes)
+        response[:error_codes].split(',')
       end
 
       def fraud_review?(response)
@@ -630,7 +671,12 @@ module ActiveMerchant #:nodoc:
       end
 
       def authorization_from(response)
-        response[:transaction_id] || response[:authorization_id] || response[:refund_transaction_id] # middle one is from reauthorization
+        (
+          response[:transaction_id] ||
+          response[:authorization_id] ||
+          response[:refund_transaction_id] ||
+          response[:billing_agreement_id]
+        )
       end
 
       def successful?(response)
@@ -643,6 +689,14 @@ module ActiveMerchant #:nodoc:
 
       def date_to_iso(date)
         (date.is_a?(Date) ? date.to_time : date).utc.iso8601
+      end
+
+      def item_amount(amount, currency_code)
+        if amount.to_i < 0 && non_fractional_currency?(currency_code)
+          amount(amount).to_f.floor
+        else
+          localized_amount(amount, currency_code)
+        end
       end
     end
   end

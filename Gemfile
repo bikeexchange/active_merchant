@@ -1,7 +1,9 @@
 source 'https://rubygems.org'
 gemspec
 
-gem 'activesupport', '3.2.8'
-gem 'rails', '3.2.8'
+gem 'jruby-openssl', :platforms => :jruby
 
-eval File.read(File.expand_path("../Gemfile_common", __FILE__))
+group :test, :remote_test do
+  # gateway-specific dependencies, keeping these gems out of the gemspec
+  gem 'braintree', '>= 2.50.0'
+end

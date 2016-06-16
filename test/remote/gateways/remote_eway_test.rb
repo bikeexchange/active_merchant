@@ -68,6 +68,17 @@ class EwayTest < Test::Unit::TestCase
 
     assert response = @gateway.refund(200, response.authorization)
     assert_failure response
-    assert_match /Error.*Your refund could not be processed./, response.message
+    assert_match %r{Error.*Your refund could not be processed.}, response.message
+  end
+
+  def test_transcript_scrubbing
+    @credit_card_success.verification_value =  "431"
+    transcript = capture_transcript(@gateway) do
+      @gateway.purchase(100, @credit_card_success, @params)
+    end
+    clean_transcript = @gateway.scrub(transcript)
+
+    assert_scrubbed(@credit_card_success.number, clean_transcript)
+    assert_scrubbed(@credit_card_success.verification_value.to_s, clean_transcript)
   end
 end

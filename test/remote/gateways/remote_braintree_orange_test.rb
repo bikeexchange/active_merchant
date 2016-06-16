@@ -142,6 +142,19 @@ class RemoteBraintreeOrangeTest < Test::Unit::TestCase
     assert  response.message.match(/Invalid Transaction ID \/ Object ID specified:/)
   end
 
+  def test_successful_verify
+    assert response = @gateway.verify(@credit_card, @options)
+    assert_success response
+    assert_equal "This transaction has been approved", response.message
+  end
+
+  def test_failed_verify
+    bogus_card = credit_card('4424222222222222')
+    assert response = @gateway.verify(bogus_card, @options)
+    assert_failure response
+    assert_match %r{Invalid Credit Card Number}, response.message
+  end
+
   def test_invalid_login
     gateway = BraintreeOrangeGateway.new(
                 :login => '',
@@ -150,5 +163,15 @@ class RemoteBraintreeOrangeTest < Test::Unit::TestCase
     assert response = gateway.purchase(@amount, @credit_card, @options)
     assert_equal 'Invalid Username', response.message
     assert_failure response
+  end
+
+  def test_transcript_scrubbing
+    transcript = capture_transcript(@gateway) do
+      @gateway.purchase(@declined_amount, @credit_card, @options)
+    end
+    clean_transcript = @gateway.scrub(transcript)
+    
+    assert_scrubbed(@credit_card.number, clean_transcript)
+    assert_scrubbed(@credit_card.verification_value.to_s, clean_transcript)
   end
 end

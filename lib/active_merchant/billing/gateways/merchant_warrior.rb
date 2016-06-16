@@ -12,9 +12,9 @@ module ActiveMerchant #:nodoc:
 
       self.supported_countries = ['AU']
       self.supported_cardtypes = [:visa, :master, :american_express,
-                                  :diners_club, :discover]
-      self.homepage_url = 'http://www.merchantwarrior.com/'
-      self.display_name = 'MerchantWarrior'
+                                  :diners_club, :discover, :jcb]
+      self.homepage_url = 'https://www.merchantwarrior.com/'
+      self.display_name = 'Merchant Warrior'
 
       self.money_format = :dollars
       self.default_currency = 'AUD'
@@ -27,7 +27,7 @@ module ActiveMerchant #:nodoc:
       def authorize(money, payment_method, options = {})
         post = {}
         add_amount(post, money, options)
-        add_product(post, options)
+        add_order_id(post, options)
         add_address(post, options)
         add_payment_method(post, payment_method)
         commit('processAuth', post)
@@ -36,34 +36,34 @@ module ActiveMerchant #:nodoc:
       def purchase(money, payment_method, options = {})
         post = {}
         add_amount(post, money, options)
-        add_product(post, options)
+        add_order_id(post, options)
         add_address(post, options)
         add_payment_method(post, payment_method)
         commit('processCard', post)
       end
 
-      def capture(money, identification)
+      def capture(money, identification, options = {})
         post = {}
         add_amount(post, money, options)
         add_transaction(post, identification)
-        post.merge!('captureAmount' => money.to_s)
+        post.merge!('captureAmount' => amount(money))
         commit('processCapture', post)
       end
 
-      def refund(money, identification)
+      def refund(money, identification, options = {})
         post = {}
         add_amount(post, money, options)
         add_transaction(post, identification)
-        post['refundAmount'] = money
+        post['refundAmount'] = amount(money)
         commit('refundCard', post)
       end
 
       def store(creditcard, options = {})
         post = {
-          'cardName' => creditcard.name,
+          'cardName' => scrub_name(creditcard.name),
           'cardNumber' => creditcard.number,
-          'cardExpiryMonth' => sprintf('%02d', creditcard.month),
-          'cardExpiryYear' => sprintf('%02d', creditcard.year)
+          'cardExpiryMonth' => format(creditcard.month, :two_digits),
+          'cardExpiryYear'  => format(creditcard.year, :two_digits)
         }
         commit('addCard', post)
       end
@@ -75,18 +75,21 @@ module ActiveMerchant #:nodoc:
       end
 
       def add_address(post, options)
-        return unless(address = options[:address])
+        return unless(address = (options[:billing_address] || options[:address]))
 
-        post['customerName'] = address[:name]
+        post['customerName'] = scrub_name(address[:name])
         post['customerCountry'] = address[:country]
         post['customerState'] = address[:state]
         post['customerCity'] = address[:city]
         post['customerAddress'] = address[:address1]
         post['customerPostCode'] = address[:zip]
+		post['customerIP'] = address[:ip]
+		post['customerPhone'] = address[:phone]
+		post['customerEmail'] = address[:email]
       end
 
-      def add_product(post, options)
-        post['transactionProduct'] = options[:transaction_product]
+      def add_order_id(post, options)
+        post['transactionProduct'] = truncate(options[:order_id], 34) || SecureRandom.hex(15)
       end
 
       def add_payment_method(post, payment_method)
@@ -103,16 +106,21 @@ module ActiveMerchant #:nodoc:
 
       def add_creditcard(post, creditcard)
         post['paymentCardNumber'] = creditcard.number
-        post['paymentCardName'] = creditcard.name
+        post['paymentCardName'] = scrub_name(creditcard.name)
         post['paymentCardExpiry'] = creditcard.expiry_date.expiration.strftime("%m%y")
+        post['paymentCardCSC'] = creditcard.verification_value if creditcard.verification_value?
+      end
+
+      def scrub_name(name)
+        name.gsub(/[^a-zA-Z\. -]/, '')
       end
 
       def add_amount(post, money, options)
         currency = (options[:currency] || currency(money))
 
-        post['transactionAmount'] = money.to_s
+        post['transactionAmount'] = amount(money)
         post['transactionCurrency'] = currency
-        post['hash'] = verification_hash(money, currency)
+        post['hash'] = verification_hash(amount(money), currency)
       end
 
       def verification_hash(money, currency)

@@ -58,7 +58,7 @@ class BanwireTest < Test::Unit::TestCase
 
     assert response = @gateway.purchase(@amount, @credit_card, @options)
     assert_failure response
-    assert_match /Invalid response received from the Banwire API/, response.message
+    assert_match %r{Invalid response received from the Banwire API}, response.message
   end
 
   #American Express requires address and zipcode
@@ -80,10 +80,15 @@ class BanwireTest < Test::Unit::TestCase
     @gateway.expects(:ssl_post).returns(failed_purchase_amex_response)
 
     assert response = @gateway.purchase(@amount, @amex_credit_card, @amex_options)
-    assert_match /requeridos para pagos con AMEX/, response.message
+    assert_match %r{requeridos para pagos con AMEX}, response.message
     assert_failure response
     assert response.test?
   end
+
+  def test_transcript_scrubbing
+    assert_equal scrubbed_transcript, @gateway.scrub(transcript)
+  end
+
 
   private
 
@@ -115,5 +120,13 @@ class BanwireTest < Test::Unit::TestCase
     <<-RESPONSE
     {"user":"desarrollo"
     RESPONSE
+  end
+
+  def transcript
+    %(user=desarrollo&phone=%28555%29555-5555&mail=unspecified%40email.com&reference=d833147668945a09fc72168bfa53c53c&concept=&card_num=5204164299999999&card_name=Longbob+Longsen&card_type=mastercard&card_exp=09%2F16&card_ccv2=999)
+  end
+
+  def scrubbed_transcript
+    %(user=desarrollo&phone=%28555%29555-5555&mail=unspecified%40email.com&reference=d833147668945a09fc72168bfa53c53c&concept=&card_num=[FILTERED]&card_name=Longbob+Longsen&card_type=mastercard&card_exp=09%2F16&card_ccv2=[FILTERED])
   end
 end
