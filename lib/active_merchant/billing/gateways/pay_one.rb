@@ -4,7 +4,7 @@ module ActiveMerchant #:nodoc:
       URL = 'https://api.pay1.de/post-gateway/'
 
       # The countries the gateway supports merchants from as 2 digit ISO country codes
-      self.supported_countries = ['DE']
+      self.supported_countries = ['DE', 'NL', 'BE']
 
       # The card types supported by the payment gateway
       self.supported_cardtypes = [:visa, :master, :american_express, :diners_club, :jcb]
@@ -17,23 +17,14 @@ module ActiveMerchant #:nodoc:
 
       self.money_format = :cents
 
-      def initialize( options = {} )
-        requires!(options, :mid, :portalid, :aid)
-        @options = options
+      def initialize options = {}
+        requires!(options, :mid, :portalid, :aid, :key)
+        @options = options.reject{|_,v| v.blank?}
         super
       end
 
-      def test?; @options[:test] || super; end
-
-      def authorize( money, creditcard_or_userid, options = {} )
-        post = {}
-        add_reference(post, options)
-        add_creditcard_or_userid(post, creditcard_or_userid, options)
-        add_address(post, options)
-        add_personal_data(post, options)
-        add_invoice_details(post, options)
-
-        commit('preauthorization', money, post)
+      def test?
+        @options[:mode] == 'test' || super
       end
 
       def purchase( money, creditcard_or_userid, options = {} )
@@ -47,6 +38,17 @@ module ActiveMerchant #:nodoc:
         commit('authorization', money, post)
       end
 
+      def authorize money, userid, options = {}
+        post = {}
+        add_reference(post, options)
+        add_creditcard_or_userid(post, creditcard_or_userid, options)
+        add_address(post, options)
+        add_personal_data(post, options)
+        add_invoice_details(post, options)
+
+        commit('preauthorization', money, post)
+      end
+
       def capture( money, authorization, options = {} )
         post = {}
         post[:id] = options[:id]
@@ -58,7 +60,100 @@ module ActiveMerchant #:nodoc:
         commit('capture', money, post)
       end
 
+      # can do a 'debit' of one of the sub-accounts instead of a refund
+      def refund amount, transaction_id, options = {}
+        post = {}
+        post[:txid] = transaction_id
+        post[:amount] = amount
+        post[:currency] = 'EUR'
+        post[:sequencenumber] = options[:sequencenumber]
+        # authorization (0)
+        # refund (1)
+        # OR
+        # preauthorization (0)
+        # capture (1)
+        # refund (2)
+
+        # optional
+        post[:narrative_text] = options[:narrative_text]
+        post[:use_customerdata] = options[:use_customerdata]
+
+        commit('refund', amount, post)
+      end
+
+      def update_user customer_id: nil, user_id: nil, options: {}
+        return unless customer_id.presence || user_id.presence
+        permitted_params
+      end
+
       private
+
+      def customer_params
+        (%w{
+            salutation
+            title
+            addressaddition
+            email
+            telephonenumber
+            birthday
+            language
+            vatid
+            accessname
+            accesscode
+            delete_carddata        # yes | no
+            delete_bankaccountdata # yes | no
+          } + basic_customer_params).map(&:to_sym)
+      end
+
+      def basic_customer_params
+        %w{
+          firstname
+          lastname
+          company
+          street
+          zip
+          city
+          state
+          country
+        }
+      end
+
+      def shipping_params
+        basic_customer_params.map{|x| "shipping_#{x}".to_sym}
+      end
+
+      def bank_account_params
+        %i{
+          bankcountry         # Account type/country, for use with BBAN mandatory with bankcode, bankaccount optional with iban/bic
+          bankaccountbankcode # not in NL
+          bankbranchcode      # only for only for FR, ES, FI, IT
+          bankcheckdigit      # only for FR, BE
+          bankaccountholder
+          iban                # If both (BBAN and IBAN) are submitted, IBAN is splitted into BBAN and processed
+          bic
+        }
+      end
+
+      # cardtype:
+      #
+      # V: Visa
+      # M: MasterCard
+      # A: Amex
+      # D: Diners
+      # J: JCB
+      # O: Maestro International U: Maestro UK
+      # C: Discover
+      # B: Carte Bleue
+      def credit_card_params
+        %i{
+          cardholder
+          cardpan
+          cardtype
+          cardexpiredate
+          cardissuenumber
+          pseudocardpan
+        }
+      end
 
       def add_invoice_details( post, options )
         if options[:invoice_details]
@@ -74,7 +169,7 @@ module ActiveMerchant #:nodoc:
         post[:reference] = options[:reference]
       end
 
-      def add_personal_data( post, options )
+      def add_personal_data post, options
         %w(customerid salutation firstname lastname company email).each do |key|
           if options[key.to_sym] && !post[key.to_sym]
             post[key.to_sym] = options[key.to_sym]
@@ -111,8 +206,12 @@ module ActiveMerchant #:nodoc:
         post[:cardexpiredate] = expdate(creditcard)
         post[:cardcvc2] = creditcard.verification_value if creditcard.verification_value
         post[:clearingtype] = "cc"
+        post[:cardholder] = ??
+        post[:ecommercemode] = 'internet' || '3dsecure'
+
         post[:firstname] = creditcard.first_name
         post[:lastname] = creditcard.last_name
+
         post[:cardtype] = case creditcard.brand
                             when 'visa' then 'V'
                             when 'master' then 'M'
@@ -120,12 +219,41 @@ module ActiveMerchant #:nodoc:
                             when 'american_express' then 'A'
                             when 'jcb' then 'J'
                             when 'maestro' then 'O'
+                            # U Maestro UK
+                            # C Discover
+                            # B Carte Bleue
                           end
+        post[:cardissuenumber] # only Maestro UK
+      end
+
+      def add_3dsecure post, options
+        permitted_params = [:xid, :cavv, :eci, :successurl, :errorurl]
+        post.merge!(options.slice(*permitted_params))
+        post[:clearingtype]
       end
 
       def add_userid( post, userid )
         post[:userid] = userid
         post[:clearingtype] = "cc"
+      end
+
+      def add_debit post, options
+        permitted_params = [:bankcountry, :bankaccount, :bankcode, :bankaccountholder, :iban, :bic]
+        post.merge!(options.slice(*permitted_params))
+        post[:clearingtype] = 'elv'
+      end
+
+      def add_online_transfer post, options
+        permitted_params = [:onlinebanktransfertype, :bankcountry, :bankaccount, :bankcode, :bankgrouptype, :iban, :bic, :successurl, :errorurl, :backurl]
+        post.merge!(options.slice(*permitted_params))
+        post[:clearingtype] = 'sb'
+      end
+
+      def add_ewallet
+        # wallettype: 'PPE' for PayPal Express
+        permitted_params = [:wallettype, :successurl, :errorurl, :backurl]
+        post.merge!(options.slice(*permitted_params))
+        post[:clearingtype] = 'wlt'
       end
 
       def parse( body )
@@ -145,13 +273,12 @@ module ActiveMerchant #:nodoc:
         post[:mid]        = @options[:mid]
         post[:portalid]   = @options[:portalid]
         post[:aid]        = @options[:aid]
+        post[:key]        = Digest::MD5.hexdigest(@options[:key])
         post[:mode]       = test? ? 'test' : 'live'
         post[:amount]     = money
         post[:request]    = action
         post[:currency]   = "EUR"
         post[:country]    = "DE"
-        portal_key = ""
-        post[:key]        = Digest::MD5.hexdigest(portal_key)
 
         clean_and_stringify_post(post)
 
